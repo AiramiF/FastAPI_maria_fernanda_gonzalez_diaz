@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Response, status
 
 from ..controllers import autores
+from ..controllers import libros as libros_controller
 from ..core.dependencies import PaginationDep, SessionDep
 from ..schemas.autor import AutorCreate, AutorPatch, AutorRead
+from ..schemas.libro import LibroRead
 
 router = APIRouter(prefix="/autores", tags=["Autores"])
 
@@ -36,3 +38,11 @@ def actualizar(autor_id: int, datos: AutorPatch, db: SessionDep) -> AutorRead:
 def eliminar(autor_id: int, db: SessionDep) -> Response:
     autores.eliminar_autor(db, autor_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{autor_id}/libros", response_model=list[LibroRead])
+def libros_del_autor(
+    autor_id: int, db: SessionDep, paginacion: PaginationDep
+) -> list[LibroRead]:
+    skip, limit = paginacion
+    return libros_controller.listar_libros_autor(db, autor_id, skip, limit)
