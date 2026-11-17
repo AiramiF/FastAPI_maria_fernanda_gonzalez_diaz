@@ -1,12 +1,24 @@
+import logging
+
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
-from ..core.exceptions import Conflicto, NoEncontrado, ReglaNegocio
+from ..core import cloudinary
+from ..core.exceptions import (
+    Conflicto,
+    NoEncontrado,
+    ReglaNegocio,
+    ServicioExternoError,
+)
 from ..models.autor import Autor
 from ..models.categoria import Categoria
 from ..models.libro import Libro
 from ..models.prestamo import Prestamo
 from ..schemas.libro import LibroCreate, LibroPatch, LibroRead
+from ..schemas.pagina import Pagina
+
+logger = logging.getLogger(__name__)
 
 
 def _disponibles(db: Session, libro: Libro) -> int:
@@ -27,6 +39,7 @@ def _respuesta(db: Session, libro: Libro) -> LibroRead:
         anio_publicacion=libro.anio_publicacion,
         ejemplares=libro.ejemplares,
         disponibles=_disponibles(db, libro),
+        portada_url=libro.portada_url,
         autor=libro.autor,
         categorias=libro.categorias,
     )
@@ -53,7 +66,7 @@ def listar_libros(
     desde: int | None = None,
     hasta: int | None = None,
     orden: str = "titulo",
-) -> list[LibroRead]:
+) -> Pagina[LibroRead]:
     statement = select(Libro).options(
         selectinload(Libro.autor), selectinload(Libro.categorias)
     )
@@ -71,6 +84,8 @@ def listar_libros(
         statement = statement.where(Libro.anio_publicacion >= desde)
     if hasta is not None:
         statement = statement.where(Libro.anio_publicacion <= hasta)
+    count_statement = select(func.count()).select_from(statement.order_by(None).subquery())
+    total = db.scalar(count_statement)
     if orden == "anio":
         statement = statement.order_by(Libro.anio_publicacion, Libro.id)
     elif orden == "-anio":
@@ -78,7 +93,12 @@ def listar_libros(
     else:
         statement = statement.order_by(Libro.titulo, Libro.id)
     libros = db.scalars(statement.distinct().offset(skip).limit(limit)).all()
-    return [_respuesta(db, libro) for libro in libros]
+    return Pagina(
+        items=[_respuesta(db, libro) for libro in libros],
+        total=int(total or 0),
+        skip=skip,
+        limit=limit,
+    )
 
 
 def obtener_libro(db: Session, libro_id: int) -> LibroRead:
@@ -87,18 +107,24 @@ def obtener_libro(db: Session, libro_id: int) -> LibroRead:
 
 def listar_libros_autor(
     db: Session, autor_id: int, skip: int, limit: int
-) -> list[LibroRead]:
+) -> Pagina[LibroRead]:
     if db.get(Autor, autor_id) is None:
         raise NoEncontrado("Autor no encontrado")
     statement = (
         select(Libro)
         .options(selectinload(Libro.autor), selectinload(Libro.categorias))
         .where(Libro.autor_id == autor_id)
-        .order_by(Libro.id)
-        .offset(skip)
-        .limit(limit)
     )
-    return [_respuesta(db, libro) for libro in db.scalars(statement).all()]
+    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+    libros = db.scalars(
+        statement.order_by(Libro.id).offset(skip).limit(limit)
+    ).all()
+    return Pagina(
+        items=[_respuesta(db, libro) for libro in libros],
+        total=int(total or 0),
+        skip=skip,
+        limit=limit,
+    )
 
 
 def crear_libro(db: Session, datos: LibroCreate) -> LibroRead:
@@ -166,3 +192,49 @@ def eliminar_libro(db: Session, libro_id: int) -> None:
         raise Conflicto("No se puede eliminar un libro con préstamos sin devolver")
     db.delete(libro)
     db.commit()
+
+
+def subir_portada(db: Session, libro_id: int, contenido: bytes) -> LibroRead:
+    libro = _obtener(db, libro_id)
+    url, public_id = cloudinary.subir_portada(contenido)
+    portada_anterior = libro.portada_public_id
+    libro.portada_url = url
+    libro.portada_public_id = public_id
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            cloudinary.eliminar_portada(public_id)
+        except ServicioExternoError:
+            logger.error("No se pudo limpiar una portada tras fallar el commit")
+        raise
+
+    if portada_anterior is not None:
+        cloudinary.eliminar_portada(portada_anterior)
+    return _respuesta(db, _obtener(db, libro_id))
+
+
+def eliminar_portada(db: Session, libro_id: int) -> None:
+    libro = _obtener(db, libro_id)
+    public_id = libro.portada_public_id
+    if public_id is None:
+        libro.portada_url = None
+        db.commit()
+        return
+
+    url_anterior = libro.portada_url
+    libro.portada_url = None
+    libro.portada_public_id = None
+    db.commit()
+    try:
+        cloudinary.eliminar_portada(public_id)
+    except ServicioExternoError:
+        libro.portada_url = url_anterior
+        libro.portada_public_id = public_id
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            logger.error("No se pudo restaurar la portada tras fallar su eliminación")
+        raise

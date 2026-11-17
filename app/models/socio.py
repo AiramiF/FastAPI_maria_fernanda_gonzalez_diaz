@@ -17,4 +17,5 @@ class Socio(Base):
     fecha_alta: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    usuario: Mapped["Usuario | None"] = relationship(back_populates="socio", uselist=False)
     prestamos: Mapped[list["Prestamo"]] = relationship(back_populates="socio")

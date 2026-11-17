@@ -6,6 +6,14 @@ class ErrorAplicacion(Exception):
         super().__init__(mensaje)
 
 
+class NoAutenticado(ErrorAplicacion):
+    status_code = 401
+
+
+class Prohibido(ErrorAplicacion):
+    status_code = 403
+
+
 class NoEncontrado(ErrorAplicacion):
     status_code = 404
 
@@ -16,3 +24,19 @@ class Conflicto(ErrorAplicacion):
 
 class ReglaNegocio(ErrorAplicacion):
     status_code = 422
+
+
+class CuentaBloqueada(ErrorAplicacion):
+    status_code = 423
+
+
+class ArchivoNoValido(ErrorAplicacion):
+    status_code = 422
+
+
+class PayloadDemasiadoGrande(ErrorAplicacion):
+    status_code = 413
+
+
+class ServicioExternoError(ErrorAplicacion):
+    status_code = 502

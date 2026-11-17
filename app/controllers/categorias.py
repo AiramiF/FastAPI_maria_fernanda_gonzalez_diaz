@@ -1,14 +1,17 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.exceptions import Conflicto, NoEncontrado
 from ..models.categoria import Categoria
-from ..schemas.categoria import CategoriaCreate, CategoriaPatch
+from ..schemas.categoria import CategoriaCreate, CategoriaPatch, CategoriaRead
+from ..schemas.pagina import Pagina
 
 
-def listar_categorias(db: Session, skip: int, limit: int) -> list[Categoria]:
-    statement = select(Categoria).order_by(Categoria.id).offset(skip).limit(limit)
-    return list(db.scalars(statement))
+def listar_categorias(db: Session, skip: int, limit: int) -> Pagina[CategoriaRead]:
+    statement = select(Categoria)
+    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+    items = db.scalars(statement.order_by(Categoria.id).offset(skip).limit(limit)).all()
+    return Pagina(items=list(items), total=int(total or 0), skip=skip, limit=limit)
 
 
 def obtener_categoria(db: Session, categoria_id: int) -> Categoria:

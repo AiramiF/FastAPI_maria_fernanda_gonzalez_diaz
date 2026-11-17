@@ -1,21 +1,24 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.exceptions import Conflicto, NoEncontrado
 from ..models.prestamo import Prestamo
 from ..models.socio import Socio
+from ..schemas.pagina import Pagina
 from ..schemas.prestamo import EstadoPrestamo, PrestamoRead
-from ..schemas.socio import SocioCreate, SocioPatch
+from ..schemas.socio import SocioCreate, SocioPatch, SocioRead
 from .prestamos import _respuesta, expresion_estado
 
 
 def listar_socios(
     db: Session, skip: int, limit: int, activo: bool | None = None
-) -> list[Socio]:
-    statement = select(Socio).order_by(Socio.id).offset(skip).limit(limit)
+) -> Pagina[SocioRead]:
+    statement = select(Socio)
     if activo is not None:
         statement = statement.where(Socio.activo.is_(activo))
-    return list(db.scalars(statement))
+    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+    items = db.scalars(statement.order_by(Socio.id).offset(skip).limit(limit)).all()
+    return Pagina(items=list(items), total=int(total or 0), skip=skip, limit=limit)
 
 
 def obtener_socio(db: Session, socio_id: int) -> Socio:
@@ -71,12 +74,18 @@ def listar_prestamos_socio(
     skip: int,
     limit: int,
     estado: EstadoPrestamo | None,
-) -> list[PrestamoRead]:
+) -> Pagina[PrestamoRead]:
     obtener_socio(db, socio_id)
     statement = select(Prestamo).where(Prestamo.socio_id == socio_id)
     if estado is not None:
         statement = statement.where(expresion_estado(estado))
+    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
     prestamos = db.scalars(
         statement.order_by(Prestamo.id).offset(skip).limit(limit)
     ).all()
-    return [_respuesta(prestamo) for prestamo in prestamos]
+    return Pagina(
+        items=[_respuesta(prestamo) for prestamo in prestamos],
+        total=int(total or 0),
+        skip=skip,
+        limit=limit,
+    )

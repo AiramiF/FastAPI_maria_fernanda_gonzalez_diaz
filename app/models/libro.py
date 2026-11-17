@@ -1,6 +1,4 @@
-from datetime import date
-
-from sqlalchemy import Date, ForeignKey, Integer, String
+from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..core.database import Base
@@ -16,6 +14,8 @@ class Libro(Base):
     anio_publicacion: Mapped[int] = mapped_column(Integer, nullable=False)
     ejemplares: Mapped[int] = mapped_column(Integer, nullable=False)
     autor_id: Mapped[int] = mapped_column(ForeignKey("autores.id"), nullable=False)
+    portada_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    portada_public_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     autor: Mapped["Autor"] = relationship(back_populates="libros")
     categorias: Mapped[list["Categoria"]] = relationship(
         secondary=libro_categoria,

@@ -91,3 +91,30 @@ class SocioRead(BaseModel):
     telefono: str | None
     activo: bool
     fecha_alta: datetime
+
+
+class SocioActualizarPropio(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nombre: str | None = Field(default=None, min_length=1, max_length=100)
+    telefono: str | None = Field(default=None, min_length=7, max_length=15)
+
+    @field_validator("nombre")
+    @classmethod
+    def format_nombre(cls, value: str | None) -> str | None:
+        if value is not None:
+            value = value.strip().title()
+            if not value:
+                raise ValueError("El nombre no puede estar vacío")
+        return value
+
+    @field_validator("telefono")
+    @classmethod
+    def valid_telefono(cls, value: str | None) -> str | None:
+        if value is not None:
+            value = value.strip()
+            if not 7 <= len(value) <= 15 or any(
+                character not in "0123456789 +" for character in value
+            ):
+                raise ValueError("El teléfono debe tener 7-15 dígitos, espacios o +")
+        return value

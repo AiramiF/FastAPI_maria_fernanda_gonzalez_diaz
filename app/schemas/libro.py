@@ -98,6 +98,7 @@ class LibroRead(BaseModel):
     anio_publicacion: int
     ejemplares: int
     disponibles: int
+    portada_url: str | None = None
     autor: AutorLibroRead
     categorias: list[CategoriaLibroRead]
 

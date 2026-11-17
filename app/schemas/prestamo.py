@@ -48,6 +48,8 @@ class PrestamoRead(BaseModel):
     fecha_limite: date
     fecha_devolucion: date | None
     multa: Decimal
+    multa_pagada: bool = False
+    registrado_por_id: int | None = None
     estado: EstadoPrestamo
     libro: LibroPrestamoRead
     socio: SocioPrestamoRead

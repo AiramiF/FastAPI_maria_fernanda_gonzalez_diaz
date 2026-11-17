@@ -1,18 +1,21 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.exceptions import Conflicto, NoEncontrado
 from ..models.autor import Autor
-from ..schemas.autor import AutorCreate, AutorPatch
+from ..schemas.autor import AutorCreate, AutorPatch, AutorRead
+from ..schemas.pagina import Pagina
 
 
 def listar_autores(
     db: Session, skip: int, limit: int, nacionalidad: str | None = None
-) -> list[Autor]:
-    statement = select(Autor).order_by(Autor.id).offset(skip).limit(limit)
+) -> Pagina[AutorRead]:
+    statement = select(Autor)
     if nacionalidad:
         statement = statement.where(Autor.nacionalidad.ilike(f"%{nacionalidad}%"))
-    return list(db.scalars(statement))
+    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+    items = db.scalars(statement.order_by(Autor.id).offset(skip).limit(limit)).all()
+    return Pagina(items=list(items), total=int(total or 0), skip=skip, limit=limit)
 
 
 def obtener_autor(db: Session, autor_id: int) -> Autor:
