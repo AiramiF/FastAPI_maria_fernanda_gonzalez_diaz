@@ -24,6 +24,7 @@ Los routers se publican bajo `/api/v1`. La configuración se centraliza en `app/
 - Python 3.12 o superior
 - PostgreSQL 16 instalado y ejecutándose localmente
 - PowerShell
+- PowerShell
 
 ## Instalación paso a paso
 
@@ -354,3 +355,4 @@ La lista de IP de Atlas se explica en la [documentación de acceso de red](https
 Incluye `app/`, `alembic/`, `tests/` (solo archivos fuente), `frontend/`, `alembic.ini`, `requirements.txt`, `requirements-dev.txt`, `.env.example` y `README.md`.
 
 Excluye `.env`, `.venv/`, `.git/`, `.vscode/`, `.idea/`, `frontend/.env`, `frontend/node_modules/`, `frontend/dist/`, `__pycache__/`, `.pytest_cache/`, `.coverage`, archivos `*.pyc`, `*.db`, `*.log` y temporales. Antes de comprimir, revisa que `.env.example` siga usando únicamente los marcadores ficticios.
+# BIBLIOTECA-FASTAPI-Maria-Gonzalez-Diaz

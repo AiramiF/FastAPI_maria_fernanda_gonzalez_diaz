@@ -1,6 +1,5 @@
 .env
 .env.*
-!frontend/.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -8,11 +7,5 @@ __pycache__/
 .pytest_cache/
 frontend/node_modules/
 frontend/dist/
-git check-ignore -v .env .venv/ .pytest_cache/
-# Configuración local del editor
 .vscode/
-
-# Dependencias del frontend
 node_modules/
-frontend/node_modules/
-frontend/dist/

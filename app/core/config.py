@@ -7,6 +7,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     DATABASE_URL: str = Field(..., description="URL de conexión principal de PostgreSQL")
+    MONGODB_URI: str | None = Field(
+        default=None,
+        description="URI de conexión de MongoDB; opcional mientras PostgreSQL siga activo",
+    )
+    MONGODB_DATABASE: str = Field(default="biblioteca")
     TEST_DATABASE_URL: str = Field(
         default="postgresql+psycopg://postgres:postgres@localhost:5432/FASTAPI_BIBLIOTECA_TEST",
         description="URL de conexión para pruebas de PostgreSQL",
