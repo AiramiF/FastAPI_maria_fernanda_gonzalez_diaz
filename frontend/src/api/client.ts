@@ -1,6 +1,6 @@
 import type { TokenPair } from "./types";
 
-const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1").replace(/\/$/, "");
+const API_URL = (import.meta.env.VITE_API_URL || "/api/v1").replace(/\/$/, "");
 const REFRESH_KEY = "biblioteca_refresh";
 
 let accessToken: string | null = null;
