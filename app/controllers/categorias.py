@@ -1,58 +1,51 @@
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
-
 from ..core.exceptions import Conflicto, NoEncontrado
-from ..models.categoria import Categoria
-from ..schemas.categoria import CategoriaCreate, CategoriaPatch, CategoriaRead
+from ..core.mongodb import Repository
+from ..schemas.categoria import CategoriaCreate, CategoriaPatch
 from ..schemas.pagina import Pagina
 
 
-def listar_categorias(db: Session, skip: int, limit: int) -> Pagina[CategoriaRead]:
-    statement = select(Categoria)
-    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
-    items = db.scalars(statement.order_by(Categoria.id).offset(skip).limit(limit)).all()
-    return Pagina(items=list(items), total=int(total or 0), skip=skip, limit=limit)
+def listar_categorias(db: Repository, skip: int, limit: int) -> Pagina:
+    items = list(db.collection("categorias").find({}, {"_id": 0}).sort("id", 1))
+    return Pagina(items=items[skip : skip + limit], total=len(items), skip=skip, limit=limit)
 
 
-def obtener_categoria(db: Session, categoria_id: int) -> Categoria:
-    categoria = db.get(Categoria, categoria_id)
-    if categoria is None:
+def obtener_categoria(db: Repository, categoria_id: int) -> dict:
+    category = db.get("categorias", categoria_id)
+    if category is None:
         raise NoEncontrado("Categoría no encontrada")
-    return categoria
+    return category
 
 
-def crear_categoria(db: Session, datos: CategoriaCreate) -> Categoria:
-    if db.scalar(
-        select(Categoria.id).where(Categoria.nombre == datos.nombre)
-    ) is not None:
+def crear_categoria(db: Repository, datos: CategoriaCreate) -> dict:
+    if db.collection("categorias").find_one({"nombre": datos.nombre}):
         raise Conflicto("La categoría ya existe")
-    categoria = Categoria(**datos.model_dump())
-    db.add(categoria)
-    db.commit()
-    db.refresh(categoria)
-    return categoria
+    return db.insert("categorias", datos.model_dump())
 
 
-def actualizar_categoria(
-    db: Session, categoria_id: int, datos: CategoriaPatch
-) -> Categoria:
-    categoria = obtener_categoria(db, categoria_id)
-    cambios = datos.model_dump(exclude_unset=True)
-    if "nombre" in cambios and db.scalar(
-        select(Categoria.id).where(
-            Categoria.nombre == cambios["nombre"], Categoria.id != categoria_id
+def actualizar_categoria(db: Repository, categoria_id: int, datos: CategoriaPatch) -> dict:
+    obtener_categoria(db, categoria_id)
+    changes = datos.model_dump(exclude_unset=True)
+    if "nombre" in changes and db.collection("categorias").find_one(
+        {"nombre": changes["nombre"], "id": {"$ne": categoria_id}}
+    ):
+        raise Conflicto("La categoría ya existe")
+    return db.update("categorias", categoria_id, changes) or obtener_categoria(
+        db, categoria_id
+    )
+
+
+def eliminar_categoria(db: Repository, categoria_id: int) -> None:
+    obtener_categoria(db, categoria_id)
+    for book in db.collection("libros").find(
+        {"categoria_ids": categoria_id}, {"_id": 0}
+    ):
+        db.update(
+            "libros",
+            book["id"],
+            {
+                "categoria_ids": [
+                    item for item in book.get("categoria_ids", []) if item != categoria_id
+                ]
+            },
         )
-    ) is not None:
-        raise Conflicto("La categoría ya existe")
-    for campo, valor in cambios.items():
-        setattr(categoria, campo, valor)
-    db.commit()
-    db.refresh(categoria)
-    return categoria
-
-
-def eliminar_categoria(db: Session, categoria_id: int) -> None:
-    categoria = obtener_categoria(db, categoria_id)
-    categoria.libros.clear()
-    db.delete(categoria)
-    db.commit()
+    db.delete("categorias", categoria_id)

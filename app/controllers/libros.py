@@ -1,63 +1,48 @@
 import logging
-
-from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, selectinload
+from typing import Any
 
 from ..core import cloudinary
-from ..core.exceptions import (
-    Conflicto,
-    NoEncontrado,
-    ReglaNegocio,
-    ServicioExternoError,
-)
-from ..models.autor import Autor
-from ..models.categoria import Categoria
-from ..models.libro import Libro
-from ..models.prestamo import Prestamo
+from ..core.exceptions import Conflicto, NoEncontrado, ReglaNegocio, ServicioExternoError
+from ..core.mongodb import Repository
 from ..schemas.libro import LibroCreate, LibroPatch, LibroRead
 from ..schemas.pagina import Pagina
 
 logger = logging.getLogger(__name__)
 
 
-def _disponibles(db: Session, libro: Libro) -> int:
-    prestados = db.scalar(
-        select(func.count(Prestamo.id)).where(
-            Prestamo.libro_id == libro.id,
-            Prestamo.fecha_devolucion.is_(None),
-        )
-    )
-    return libro.ejemplares - (prestados or 0)
-
-
-def _respuesta(db: Session, libro: Libro) -> LibroRead:
-    return LibroRead(
-        id=libro.id,
-        titulo=libro.titulo,
-        isbn=libro.isbn,
-        anio_publicacion=libro.anio_publicacion,
-        ejemplares=libro.ejemplares,
-        disponibles=_disponibles(db, libro),
-        portada_url=libro.portada_url,
-        autor=libro.autor,
-        categorias=libro.categorias,
-    )
-
-
-def _obtener(db: Session, libro_id: int) -> Libro:
-    libro = db.scalar(
-        select(Libro)
-        .options(selectinload(Libro.autor), selectinload(Libro.categorias))
-        .where(Libro.id == libro_id)
-    )
-    if libro is None:
+def _obtener(db: Repository, libro_id: int) -> dict[str, Any]:
+    book = db.get("libros", libro_id)
+    if book is None:
         raise NoEncontrado("Libro no encontrado")
-    return libro
+    return book
+
+
+def _respuesta(db: Repository, book: dict[str, Any]) -> LibroRead:
+    author = db.get("autores", book["autor_id"])
+    if author is None:
+        raise NoEncontrado("Autor no encontrado")
+    categories = [
+        db.get("categorias", category_id)
+        for category_id in book.get("categoria_ids", [])
+    ]
+    active_loans = db.collection("prestamos").count_documents(
+        {"libro_id": book["id"], "fecha_devolucion": None}
+    )
+    return LibroRead(
+        id=book["id"],
+        titulo=book["titulo"],
+        isbn=book["isbn"],
+        anio_publicacion=book["anio_publicacion"],
+        ejemplares=book["ejemplares"],
+        disponibles=book["ejemplares"] - active_loans,
+        portada_url=book.get("portada_url"),
+        autor=author,
+        categorias=[category for category in categories if category is not None],
+    )
 
 
 def listar_libros(
-    db: Session,
+    db: Repository,
     skip: int,
     limit: int,
     buscar: str | None = None,
@@ -66,175 +51,155 @@ def listar_libros(
     desde: int | None = None,
     hasta: int | None = None,
     orden: str = "titulo",
-) -> Pagina[LibroRead]:
-    statement = select(Libro).options(
-        selectinload(Libro.autor), selectinload(Libro.categorias)
-    )
+) -> Pagina:
+    items = list(db.collection("libros").find({}, {"_id": 0}))
     if buscar:
-        statement = statement.where(Libro.titulo.ilike(f"%{buscar}%"))
+        needle = buscar.casefold()
+        items = [book for book in items if needle in book["titulo"].casefold()]
     if autor:
-        statement = statement.join(Libro.autor).where(
-            Autor.nombre.ilike(f"%{autor}%")
-        )
+        needle = autor.casefold()
+        items = [
+            book
+            for book in items
+            if (db.get("autores", book["autor_id"]) or {}).get("nombre", "")
+            .casefold()
+            .find(needle)
+            >= 0
+        ]
     if categoria_id is not None:
-        statement = statement.join(Libro.categorias).where(
-            Categoria.id == categoria_id
-        )
+        items = [book for book in items if categoria_id in book.get("categoria_ids", [])]
     if desde is not None:
-        statement = statement.where(Libro.anio_publicacion >= desde)
+        items = [book for book in items if book["anio_publicacion"] >= desde]
     if hasta is not None:
-        statement = statement.where(Libro.anio_publicacion <= hasta)
-    count_statement = select(func.count()).select_from(statement.order_by(None).subquery())
-    total = db.scalar(count_statement)
+        items = [book for book in items if book["anio_publicacion"] <= hasta]
     if orden == "anio":
-        statement = statement.order_by(Libro.anio_publicacion, Libro.id)
+        items.sort(key=lambda book: (book["anio_publicacion"], book["id"]))
     elif orden == "-anio":
-        statement = statement.order_by(Libro.anio_publicacion.desc(), Libro.id)
+        items.sort(key=lambda book: (-book["anio_publicacion"], book["id"]))
     else:
-        statement = statement.order_by(Libro.titulo, Libro.id)
-    libros = db.scalars(statement.distinct().offset(skip).limit(limit)).all()
+        items.sort(key=lambda book: (book["titulo"].casefold(), book["id"]))
+    total = len(items)
     return Pagina(
-        items=[_respuesta(db, libro) for libro in libros],
-        total=int(total or 0),
+        items=[_respuesta(db, book) for book in items[skip : skip + limit]],
+        total=total,
         skip=skip,
         limit=limit,
     )
 
 
-def obtener_libro(db: Session, libro_id: int) -> LibroRead:
+def obtener_libro(db: Repository, libro_id: int) -> LibroRead:
     return _respuesta(db, _obtener(db, libro_id))
 
 
 def listar_libros_autor(
-    db: Session, autor_id: int, skip: int, limit: int
-) -> Pagina[LibroRead]:
-    if db.get(Autor, autor_id) is None:
+    db: Repository, autor_id: int, skip: int, limit: int
+) -> Pagina:
+    if db.get("autores", autor_id) is None:
         raise NoEncontrado("Autor no encontrado")
-    statement = (
-        select(Libro)
-        .options(selectinload(Libro.autor), selectinload(Libro.categorias))
-        .where(Libro.autor_id == autor_id)
+    items = list(
+        db.collection("libros")
+        .find({"autor_id": autor_id}, {"_id": 0})
+        .sort("id", 1)
     )
-    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
-    libros = db.scalars(
-        statement.order_by(Libro.id).offset(skip).limit(limit)
-    ).all()
     return Pagina(
-        items=[_respuesta(db, libro) for libro in libros],
-        total=int(total or 0),
+        items=[_respuesta(db, book) for book in items[skip : skip + limit]],
+        total=len(items),
         skip=skip,
         limit=limit,
     )
 
 
-def crear_libro(db: Session, datos: LibroCreate) -> LibroRead:
-    if db.get(Autor, datos.autor_id) is None:
+def crear_libro(db: Repository, datos: LibroCreate) -> LibroRead:
+    if db.get("autores", datos.autor_id) is None:
         raise NoEncontrado("Autor no encontrado")
-    categorias = list(
-        db.scalars(
-            select(Categoria).where(Categoria.id.in_(datos.categoria_ids))
-        ).all()
-    )
-    if len(categorias) != len(datos.categoria_ids):
+    if any(db.get("categorias", category_id) is None for category_id in datos.categoria_ids):
         raise NoEncontrado("Categoría no encontrada")
-    if db.scalar(select(Libro.id).where(Libro.isbn == datos.isbn)) is not None:
+    if db.collection("libros").find_one({"isbn": datos.isbn}):
         raise Conflicto("El ISBN ya existe")
-    campos = datos.model_dump(exclude={"categoria_ids"})
-    libro = Libro(**campos, categorias=categorias)
-    db.add(libro)
-    db.commit()
-    return _respuesta(db, _obtener(db, libro.id))
+    fields = datos.model_dump(exclude={"categoria_ids"})
+    book = db.insert(
+        "libros",
+        {
+            **fields,
+            "categoria_ids": datos.categoria_ids,
+            "portada_url": None,
+            "portada_public_id": None,
+        },
+    )
+    return _respuesta(db, book)
 
 
-def actualizar_libro(db: Session, libro_id: int, datos: LibroPatch) -> LibroRead:
-    libro = _obtener(db, libro_id)
-    cambios = datos.model_dump(exclude_unset=True)
-    if "autor_id" in cambios and db.get(Autor, cambios["autor_id"]) is None:
+def actualizar_libro(db: Repository, libro_id: int, datos: LibroPatch) -> LibroRead:
+    book = _obtener(db, libro_id)
+    changes = datos.model_dump(exclude_unset=True)
+    if "autor_id" in changes and db.get("autores", changes["autor_id"]) is None:
         raise NoEncontrado("Autor no encontrado")
-    if "isbn" in cambios and db.scalar(
-        select(Libro.id).where(Libro.isbn == cambios["isbn"], Libro.id != libro_id)
-    ) is not None:
+    if "isbn" in changes and db.collection("libros").find_one(
+        {"isbn": changes["isbn"], "id": {"$ne": libro_id}}
+    ):
         raise Conflicto("El ISBN ya existe")
-    categorias = None
-    if "categoria_ids" in cambios:
-        categoria_ids = cambios.pop("categoria_ids")
-        categorias = list(
-            db.scalars(select(Categoria).where(Categoria.id.in_(categoria_ids))).all()
-        )
-        if len(categorias) != len(categoria_ids):
-            raise NoEncontrado("Categoría no encontrada")
-    ejemplares = cambios.get("ejemplares", libro.ejemplares)
-    prestamos_activos = db.scalar(
-        select(func.count(Prestamo.id)).where(
-            Prestamo.libro_id == libro_id,
-            Prestamo.fecha_devolucion.is_(None),
-        )
+    if "categoria_ids" in changes and any(
+        db.get("categorias", category_id) is None
+        for category_id in changes["categoria_ids"]
+    ):
+        raise NoEncontrado("Categoría no encontrada")
+    active_loans = db.collection("prestamos").count_documents(
+        {"libro_id": libro_id, "fecha_devolucion": None}
     )
-    if ejemplares < (prestamos_activos or 0):
-        raise ReglaNegocio("Los ejemplares no pueden ser menores que los préstamos activos")
-    for campo, valor in cambios.items():
-        setattr(libro, campo, valor)
-    if categorias is not None:
-        libro.categorias = categorias
-    db.commit()
-    return _respuesta(db, _obtener(db, libro_id))
+    if changes.get("ejemplares", book["ejemplares"]) < active_loans:
+        raise ReglaNegocio(
+            "Los ejemplares no pueden ser menores que los préstamos activos"
+        )
+    updated = db.update("libros", libro_id, changes)
+    return _respuesta(db, updated or _obtener(db, libro_id))
 
 
-def eliminar_libro(db: Session, libro_id: int) -> None:
-    libro = _obtener(db, libro_id)
-    activos = db.scalar(
-        select(func.count(Prestamo.id)).where(
-            Prestamo.libro_id == libro_id,
-            Prestamo.fecha_devolucion.is_(None),
-        )
-    )
-    if activos:
+def eliminar_libro(db: Repository, libro_id: int) -> None:
+    _obtener(db, libro_id)
+    if db.collection("prestamos").count_documents(
+        {"libro_id": libro_id, "fecha_devolucion": None}
+    ):
         raise Conflicto("No se puede eliminar un libro con préstamos sin devolver")
-    db.delete(libro)
-    db.commit()
+    loans = list(
+        db.collection("prestamos").find({"libro_id": libro_id}, {"_id": 0})
+    )
+    loan_ids = [loan["id"] for loan in loans]
+    if loan_ids:
+        db.collection("multas").delete_many({"prestamo_id": {"$in": loan_ids}})
+        db.collection("prestamos").delete_many({"id": {"$in": loan_ids}})
+    db.delete("libros", libro_id)
 
 
-def subir_portada(db: Session, libro_id: int, contenido: bytes) -> LibroRead:
-    libro = _obtener(db, libro_id)
+def subir_portada(db: Repository, libro_id: int, contenido: bytes) -> LibroRead:
+    book = _obtener(db, libro_id)
     url, public_id = cloudinary.subir_portada(contenido)
-    portada_anterior = libro.portada_public_id
-    libro.portada_url = url
-    libro.portada_public_id = public_id
     try:
-        db.commit()
+        updated = db.update(
+            "libros",
+            libro_id,
+            {"portada_url": url, "portada_public_id": public_id},
+        )
+        if updated is None:
+            raise NoEncontrado("Libro no encontrado")
     except Exception:
-        db.rollback()
         try:
             cloudinary.eliminar_portada(public_id)
         except ServicioExternoError:
-            logger.error("No se pudo limpiar una portada tras fallar el commit")
+            logger.exception("No se pudo limpiar una portada tras fallar su guardado")
         raise
+    old_public_id = book.get("portada_public_id")
+    if old_public_id:
+        cloudinary.eliminar_portada(old_public_id)
+    return _respuesta(db, updated)
 
-    if portada_anterior is not None:
-        cloudinary.eliminar_portada(portada_anterior)
-    return _respuesta(db, _obtener(db, libro_id))
 
-
-def eliminar_portada(db: Session, libro_id: int) -> None:
-    libro = _obtener(db, libro_id)
-    public_id = libro.portada_public_id
-    if public_id is None:
-        libro.portada_url = None
-        db.commit()
-        return
-
-    url_anterior = libro.portada_url
-    libro.portada_url = None
-    libro.portada_public_id = None
-    db.commit()
-    try:
+def eliminar_portada(db: Repository, libro_id: int) -> None:
+    book = _obtener(db, libro_id)
+    public_id = book.get("portada_public_id")
+    if public_id:
         cloudinary.eliminar_portada(public_id)
-    except ServicioExternoError:
-        libro.portada_url = url_anterior
-        libro.portada_public_id = public_id
-        try:
-            db.commit()
-        except SQLAlchemyError:
-            db.rollback()
-            logger.error("No se pudo restaurar la portada tras fallar su eliminación")
-        raise
+    db.update(
+        "libros",
+        libro_id,
+        {"portada_url": None, "portada_public_id": None},
+    )

@@ -2,7 +2,7 @@ from fastapi import APIRouter, File, Query, Response, UploadFile, status
 
 from ..controllers import libros
 from ..core.exceptions import ArchivoNoValido, PayloadDemasiadoGrande
-from ..core.dependencies import AdminUser, PaginationDep, SessionDep, StaffUser
+from ..core.dependencies import AdminUser, PaginationDep, RepositoryDep, StaffUser
 from ..schemas.libro import LibroCreate, LibroPatch, LibroRead, OrdenLibro
 from ..schemas.pagina import Pagina
 
@@ -35,7 +35,7 @@ def _leer_portada(archivo: UploadFile) -> bytes:
 
 @router.get("", response_model=Pagina[LibroRead])
 def listar(
-    db: SessionDep,
+    db: RepositoryDep,
     paginacion: PaginationDep,
     buscar: str | None = None,
     autor: str | None = None,
@@ -59,14 +59,14 @@ def listar(
 
 
 @router.get("/{libro_id}", response_model=LibroRead)
-def obtener(libro_id: int, db: SessionDep) -> LibroRead:
+def obtener(libro_id: int, db: RepositoryDep) -> LibroRead:
     return libros.obtener_libro(db, libro_id)
 
 
 @router.post("/{libro_id}/portada", response_model=LibroRead)
 def subir_portada(
     libro_id: int,
-    db: SessionDep,
+    db: RepositoryDep,
     _: StaffUser,
     archivo: UploadFile = File(...),
 ) -> LibroRead:
@@ -78,25 +78,25 @@ def subir_portada(
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def eliminar_portada(
-    libro_id: int, db: SessionDep, _: StaffUser
+    libro_id: int, db: RepositoryDep, _: StaffUser
 ) -> Response:
     libros.eliminar_portada(db, libro_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("", response_model=LibroRead, status_code=status.HTTP_201_CREATED)
-def crear(datos: LibroCreate, db: SessionDep, _: StaffUser) -> LibroRead:
+def crear(datos: LibroCreate, db: RepositoryDep, _: StaffUser) -> LibroRead:
     return libros.crear_libro(db, datos)
 
 
 @router.patch("/{libro_id}", response_model=LibroRead)
 def actualizar(
-    libro_id: int, datos: LibroPatch, db: SessionDep, _: StaffUser
+    libro_id: int, datos: LibroPatch, db: RepositoryDep, _: StaffUser
 ) -> LibroRead:
     return libros.actualizar_libro(db, libro_id, datos)
 
 
 @router.delete("/{libro_id}", status_code=status.HTTP_204_NO_CONTENT)
-def eliminar(libro_id: int, db: SessionDep, _: AdminUser) -> Response:
+def eliminar(libro_id: int, db: RepositoryDep, _: AdminUser) -> Response:
     libros.eliminar_libro(db, libro_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

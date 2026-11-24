@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from ..core.rate_limit import limiter
 from ..controllers import auth as auth_controller
-from ..core.dependencies import CurrentUser, SessionDep, oauth2_scheme
+from ..core.dependencies import CurrentUser, RepositoryDep, oauth2_scheme
 from ..schemas.auth import PasswordCambio, TokenPair
 from ..schemas.usuario import UsuarioRegistro, UsuarioRespuesta
 
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/auth", tags=["Autenticación"])
 def registro(
     request: Request,
     datos: UsuarioRegistro,
-    db: SessionDep,
+    db: RepositoryDep,
 ) -> UsuarioRespuesta:
     return auth_controller.registrar_usuario(db, datos)
 
@@ -35,7 +35,7 @@ def registro(
 @limiter.limit("10/minute")
 def login(
     request: Request,
-    db: SessionDep,
+    db: RepositoryDep,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
 ) -> TokenPair:
     return auth_controller.login_usuario(db, form_data.username, form_data.password)
@@ -47,7 +47,7 @@ def login(
     summary="Renovar tokens",
 )
 def refresh(
-    db: SessionDep,
+    db: RepositoryDep,
     token: Annotated[str, Depends(oauth2_scheme)],
 ) -> TokenPair:
     return auth_controller.refresh_usuario(db, token)
@@ -58,7 +58,7 @@ def refresh(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Cerrar sesión",
 )
-def logout(db: SessionDep, usuario: CurrentUser) -> Response:
+def logout(db: RepositoryDep, usuario: CurrentUser) -> Response:
     auth_controller.logout_usuario(db, usuario)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -78,7 +78,7 @@ def me(usuario: CurrentUser) -> UsuarioRespuesta:
     summary="Cambiar contraseña del usuario autenticado",
 )
 def cambiar_password(
-    db: SessionDep,
+    db: RepositoryDep,
     usuario: CurrentUser,
     payload: PasswordCambio,
 ) -> Response:

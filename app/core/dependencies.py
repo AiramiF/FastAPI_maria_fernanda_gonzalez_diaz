@@ -1,27 +1,23 @@
-from collections.abc import Generator
 from datetime import datetime, timezone
-from typing import Annotated
+from types import SimpleNamespace
+from typing import Annotated, Any
 
-from fastapi import Depends, Query
+from fastapi import Depends, Query, Request
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
 
-from app.models.usuario import Usuario
-
-from .database import SessionLocal
 from .exceptions import CuentaBloqueada, NoAutenticado, Prohibido
+from .mongodb import Repository
 from .security import SecurityService, normalizar_utc
 
 
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def get_repository(request: Request) -> Repository:
+    repository = getattr(request.app.state, "repository", None)
+    if repository is None:
+        raise RuntimeError("El repositorio no fue inicializado")
+    return repository
 
 
-SessionDep = Annotated[Session, Depends(get_db)]
+RepositoryDep = Annotated[Repository, Depends(get_repository)]
 
 
 def pagination(
@@ -32,14 +28,13 @@ def pagination(
 
 
 PaginationDep = Annotated[tuple[int, int], Depends(pagination)]
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
 async def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
-    db: SessionDep,
-) -> Usuario:
+    db: RepositoryDep,
+) -> Any:
     try:
         payload = SecurityService.decode_token(token)
     except Exception as exc:  # noqa: BLE001
@@ -48,35 +43,33 @@ async def get_current_user(
     if payload.get("type") != "access":
         raise NoAutenticado("Credenciales inválidas")
 
-    usuario = db.get(Usuario, int(payload["sub"]))
-    if usuario is None:
+    user = db.get("usuarios", int(payload["sub"]))
+    if user is None:
         raise NoAutenticado("Credenciales inválidas")
-
-    if not usuario.activo:
+    if not user["activo"]:
         raise Prohibido("Usuario inactivo")
 
-    bloqueado_hasta = normalizar_utc(usuario.bloqueado_hasta)
-    if bloqueado_hasta and bloqueado_hasta > datetime.now(timezone.utc):
+    blocked_until = normalizar_utc(user.get("bloqueado_hasta"))
+    if blocked_until and blocked_until > datetime.now(timezone.utc):
         raise CuentaBloqueada("Cuenta bloqueada temporalmente")
+    return SimpleNamespace(**user)
 
-    return usuario
 
-
-CurrentUser = Annotated[Usuario, Depends(get_current_user)]
+CurrentUser = Annotated[Any, Depends(get_current_user)]
 Staff = ("admin", "bibliotecario")
 
 
 def require_rol(*roles: str):
-    allowed = {rol.lower() for rol in roles}
+    allowed = {role.lower() for role in roles}
 
-    def _dependencia(usuario: CurrentUser) -> Usuario:
-        if usuario.rol.value.lower() not in allowed:
+    def dependency(user: CurrentUser) -> Any:
+        if user.rol.lower() not in allowed:
             raise Prohibido("No tiene permisos para esta operación")
-        return usuario
+        return user
 
-    return _dependencia
+    return dependency
 
 
-AdminUser = Annotated[Usuario, Depends(require_rol("admin"))]
-StaffUser = Annotated[Usuario, Depends(require_rol(*Staff))]
-SocioUser = Annotated[Usuario, Depends(require_rol("socio"))]
+AdminUser = Annotated[Any, Depends(require_rol("admin"))]
+StaffUser = Annotated[Any, Depends(require_rol(*Staff))]
+SocioUser = Annotated[Any, Depends(require_rol("socio"))]

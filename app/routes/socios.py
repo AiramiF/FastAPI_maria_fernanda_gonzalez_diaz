@@ -1,12 +1,11 @@
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Response, status
 
 from ..controllers import prestamos as prestamos_controller
 from ..controllers import socios
 from ..core.dependencies import (
     AdminUser,
-    CurrentUser,
     PaginationDep,
-    SessionDep,
+    RepositoryDep,
     SocioUser,
     StaffUser,
 )
@@ -20,7 +19,7 @@ router = APIRouter(prefix="/socios", tags=["Socios"])
 
 @router.get("/me", response_model=SocioRead)
 def mi_perfil(
-    db: SessionDep,
+    db: RepositoryDep,
     usuario: SocioUser,
 ) -> SocioRead:
     if usuario.socio_id is None:
@@ -30,22 +29,20 @@ def mi_perfil(
 
 @router.patch("/me", response_model=SocioRead)
 def actualizar_mi_perfil(
-    db: SessionDep,
+    db: RepositoryDep,
     datos: SocioActualizarPropio,
     usuario: SocioUser,
 ) -> SocioRead:
     if usuario.socio_id is None:
         raise NoEncontrado("Socio no encontrado")
-    socio = socios.obtener_socio(db, usuario.socio_id)
-    for campo, valor in datos.model_dump(exclude_unset=True).items():
-        setattr(socio, campo, valor)
-    db.commit(); db.refresh(socio)
-    return socio
+    return socios.actualizar_perfil_propio(
+        db, usuario.socio_id, datos.model_dump(exclude_unset=True)
+    )
 
 
 @router.get("/me/prestamos", response_model=Pagina[PrestamoRead])
 def mis_prestamos(
-    db: SessionDep,
+    db: RepositoryDep,
     paginacion: PaginationDep,
     usuario: SocioUser,
     estado: EstadoPrestamo | None = None,
@@ -73,36 +70,19 @@ def mis_prestamos(
 
 @router.get("/me/multas", response_model=Pagina[PrestamoRead])
 def mis_multas(
-    db: SessionDep,
+    db: RepositoryDep,
     paginacion: PaginationDep,
     usuario: SocioUser,
 ) -> Pagina[PrestamoRead]:
     if usuario.socio_id is None:
         raise NoEncontrado("Socio no encontrado")
     skip, limit = paginacion
-    prestamos = db.query(prestamos_controller.Prestamo).filter(
-        prestamos_controller.Prestamo.socio_id == usuario.socio_id,
-        prestamos_controller.Prestamo.multa > 0,
-        prestamos_controller.Prestamo.multa_pagada.is_(False),
-    ).order_by(prestamos_controller.Prestamo.id).offset(skip).limit(limit).all()
-    total = db.query(prestamos_controller.Prestamo).filter(
-        prestamos_controller.Prestamo.socio_id == usuario.socio_id,
-        prestamos_controller.Prestamo.multa > 0,
-        prestamos_controller.Prestamo.multa_pagada.is_(False),
-    ).count()
-    return Pagina[
-        PrestamoRead
-    ](
-        items=[prestamos_controller._respuesta(item) for item in prestamos],
-        total=total,
-        skip=skip,
-        limit=limit,
-    )
+    return socios.listar_multas_socio(db, usuario.socio_id, skip, limit)
 
 
 @router.get("", response_model=Pagina[SocioRead])
 def listar(
-    db: SessionDep,
+    db: RepositoryDep,
     paginacion: PaginationDep,
     _: StaffUser,
     activo: bool | None = None,
@@ -122,7 +102,7 @@ def listar(
 @router.get("/{socio_id}", response_model=SocioRead)
 def obtener(
     socio_id: int,
-    db: SessionDep,
+    db: RepositoryDep,
     _: StaffUser,
 ) -> SocioRead:
     return socios.obtener_socio(db, socio_id)
@@ -131,7 +111,7 @@ def obtener(
 @router.post("", response_model=SocioRead, status_code=status.HTTP_201_CREATED)
 def crear(
     datos: SocioCreate,
-    db: SessionDep,
+    db: RepositoryDep,
     _: StaffUser,
 ) -> SocioRead:
     return socios.crear_socio(db, datos)
@@ -141,7 +121,7 @@ def crear(
 def actualizar(
     socio_id: int,
     datos: SocioPatch,
-    db: SessionDep,
+    db: RepositoryDep,
     _: StaffUser,
 ) -> SocioRead:
     return socios.actualizar_socio(db, socio_id, datos)
@@ -150,7 +130,7 @@ def actualizar(
 @router.delete("/{socio_id}", status_code=status.HTTP_204_NO_CONTENT)
 def eliminar(
     socio_id: int,
-    db: SessionDep,
+    db: RepositoryDep,
     _: AdminUser,
 ) -> Response:
     socios.eliminar_socio(db, socio_id)
@@ -160,7 +140,7 @@ def eliminar(
 @router.get("/{socio_id}/prestamos", response_model=Pagina[PrestamoRead])
 def listar_prestamos(
     socio_id: int,
-    db: SessionDep,
+    db: RepositoryDep,
     paginacion: PaginationDep,
     _: StaffUser,
     estado: EstadoPrestamo | None = None,

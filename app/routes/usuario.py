@@ -1,7 +1,7 @@
 from fastapi import APIRouter, status
 
 from ..controllers import usuario as usuario_controller
-from ..core.dependencies import AdminUser, PaginationDep, SessionDep
+from ..core.dependencies import AdminUser, PaginationDep, RepositoryDep
 from ..schemas.pagina import Pagina
 from ..schemas.usuario import (
     UsuarioActivoUpdate,
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/usuarios", tags=["Usuarios"])
 
 @router.get("", response_model=Pagina[UsuarioRespuesta])
 def listar(
-    db: SessionDep,
+    db: RepositoryDep,
     paginacion: PaginationDep,
     _: AdminUser,
     rol: str | None = None,
@@ -36,7 +36,7 @@ def listar(
 @router.post("", response_model=UsuarioRespuesta, status_code=status.HTTP_201_CREATED)
 def crear(
     datos: UsuarioAdminCreate,
-    db: SessionDep,
+    db: RepositoryDep,
     _: AdminUser,
 ) -> UsuarioRespuesta:
     usuario = usuario_controller.crear_usuario_admin(db, datos)
@@ -47,11 +47,11 @@ def crear(
 def actualizar_rol(
     usuario_id: int,
     datos: UsuarioRolUpdate,
-    db: SessionDep,
-    usuario_actual: AdminUser,
+    db: RepositoryDep,
+    _: AdminUser,
 ) -> UsuarioRespuesta:
     usuario = usuario_controller.actualizar_rol_usuario(
-        db, usuario_id, datos, usuario_actual
+        db, usuario_id, datos
     )
     return UsuarioRespuesta.model_validate(usuario)
 
@@ -60,10 +60,10 @@ def actualizar_rol(
 def actualizar_activo(
     usuario_id: int,
     datos: UsuarioActivoUpdate,
-    db: SessionDep,
-    usuario_actual: AdminUser,
+    db: RepositoryDep,
+    _: AdminUser,
 ) -> UsuarioRespuesta:
     usuario = usuario_controller.actualizar_activo_usuario(
-        db, usuario_id, datos, usuario_actual
+        db, usuario_id, datos
     )
     return UsuarioRespuesta.model_validate(usuario)

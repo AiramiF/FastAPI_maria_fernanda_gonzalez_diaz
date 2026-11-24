@@ -1,201 +1,202 @@
 from datetime import date, timedelta
 from decimal import Decimal
-
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from typing import Any
 
 from ..core.exceptions import Conflicto, NoEncontrado, ReglaNegocio
-from ..models.libro import Libro
-from ..models.prestamo import Prestamo
-from ..models.socio import Socio
+from ..core.mongodb import Repository
 from ..schemas.pagina import Pagina
-from ..schemas.prestamo import (
-    EstadoPrestamo,
-    PrestamoCreate,
-    PrestamoRead,
-)
+from ..schemas.prestamo import EstadoPrestamo, PrestamoCreate, PrestamoRead
 
 
-def expresion_estado(estado: EstadoPrestamo):
-    hoy = date.today()
-    if estado == EstadoPrestamo.devuelto:
-        return Prestamo.fecha_devolucion.is_not(None)
-    if estado == EstadoPrestamo.vencido:
-        return (
-            Prestamo.fecha_devolucion.is_(None)
-            & (Prestamo.fecha_limite < hoy)
-        )
-    return (
-        Prestamo.fecha_devolucion.is_(None)
-        & (Prestamo.fecha_limite >= hoy)
-    )
+def _as_date(value: date | str | None) -> date | None:
+    return date.fromisoformat(value) if isinstance(value, str) else value
 
 
-def _estado(prestamo: Prestamo) -> EstadoPrestamo:
-    if prestamo.fecha_devolucion is not None:
+def _estado(loan: dict[str, Any]) -> EstadoPrestamo:
+    if loan.get("fecha_devolucion") is not None:
         return EstadoPrestamo.devuelto
-    if prestamo.fecha_limite < date.today():
+    if _as_date(loan["fecha_limite"]) < date.today():
         return EstadoPrestamo.vencido
     return EstadoPrestamo.activo
 
 
-def _respuesta(prestamo: Prestamo) -> PrestamoRead:
+def _respuesta(db: Repository, loan: dict[str, Any]) -> PrestamoRead:
+    book = db.get("libros", loan["libro_id"])
+    member = db.get("socios", loan["socio_id"])
+    if book is None or member is None:
+        raise NoEncontrado("No se encontró el libro o socio del préstamo")
     return PrestamoRead(
-        id=prestamo.id,
-        libro_id=prestamo.libro_id,
-        socio_id=prestamo.socio_id,
-        fecha_prestamo=prestamo.fecha_prestamo,
-        fecha_limite=prestamo.fecha_limite,
-        fecha_devolucion=prestamo.fecha_devolucion,
-        multa=prestamo.multa,
-        multa_pagada=getattr(prestamo, "multa_pagada", False),
-        registrado_por_id=getattr(prestamo, "registrado_por_id", None),
-        estado=_estado(prestamo),
-        libro=prestamo.libro,
-        socio=prestamo.socio,
+        id=loan["id"],
+        libro_id=loan["libro_id"],
+        socio_id=loan["socio_id"],
+        fecha_prestamo=_as_date(loan["fecha_prestamo"]),
+        fecha_limite=_as_date(loan["fecha_limite"]),
+        fecha_devolucion=_as_date(loan.get("fecha_devolucion")),
+        multa=Decimal(str(loan.get("multa", "0"))),
+        multa_pagada=loan.get("multa_pagada", False),
+        registrado_por_id=loan.get("registrado_por_id"),
+        estado=_estado(loan),
+        libro={"id": book["id"], "titulo": book["titulo"]},
+        socio={
+            "id": member["id"],
+            "nombre": member["nombre"],
+            "email": member["email"],
+        },
     )
 
 
 def listar_prestamos(
-    db: Session,
+    db: Repository,
     skip: int,
     limit: int,
     estado: EstadoPrestamo | None,
     socio_id: int | None,
     libro_id: int | None,
-    usuario_actual: object | None = None,
-) -> Pagina[PrestamoRead]:
-    statement = select(Prestamo).options(
-        selectinload(Prestamo.libro), selectinload(Prestamo.socio)
-    )
-    if usuario_actual is not None and getattr(usuario_actual, "rol", None) and getattr(usuario_actual.rol, "value", None) == "socio":
+    usuario_actual: Any | None = None,
+) -> Pagina:
+    if usuario_actual is not None and getattr(usuario_actual, "rol", None) == "socio":
         socio_id = usuario_actual.socio_id
-    if estado is not None:
-        statement = statement.where(expresion_estado(estado))
+    query = {}
     if socio_id is not None:
-        statement = statement.where(Prestamo.socio_id == socio_id)
+        query["socio_id"] = socio_id
     if libro_id is not None:
-        statement = statement.where(Prestamo.libro_id == libro_id)
-    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
-    prestamos = db.scalars(
-        statement.order_by(Prestamo.id).offset(skip).limit(limit)
-    ).all()
+        query["libro_id"] = libro_id
+    loans = list(db.collection("prestamos").find(query, {"_id": 0}))
+    if estado is not None:
+        loans = [loan for loan in loans if _estado(loan) == estado]
+    loans.sort(key=lambda loan: loan["id"])
     return Pagina(
-        items=[_respuesta(prestamo) for prestamo in prestamos],
-        total=int(total or 0),
+        items=[_respuesta(db, loan) for loan in loans[skip : skip + limit]],
+        total=len(loans),
         skip=skip,
         limit=limit,
     )
 
 
 def obtener_prestamo(
-    db: Session,
-    prestamo_id: int,
-    usuario_actual: object | None = None,
+    db: Repository, prestamo_id: int, usuario_actual: Any | None = None
 ) -> PrestamoRead:
-    prestamo = db.scalar(
-        select(Prestamo)
-        .options(selectinload(Prestamo.libro), selectinload(Prestamo.socio))
-        .where(Prestamo.id == prestamo_id)
-    )
-    if prestamo is None:
+    loan = db.get("prestamos", prestamo_id)
+    if loan is None:
         raise NoEncontrado("Préstamo no encontrado")
-    if usuario_actual is not None and getattr(usuario_actual, "rol", None) and getattr(usuario_actual.rol, "value", None) == "socio":
-        if prestamo.socio_id != usuario_actual.socio_id:
-            raise NoEncontrado("Préstamo no encontrado")
-    return _respuesta(prestamo)
+    if (
+        usuario_actual is not None
+        and getattr(usuario_actual, "rol", None) == "socio"
+        and loan["socio_id"] != usuario_actual.socio_id
+    ):
+        raise NoEncontrado("Préstamo no encontrado")
+    return _respuesta(db, loan)
 
 
 def crear_prestamo(
-    db: Session,
-    datos: PrestamoCreate,
-    usuario_registra: object | None = None,
+    db: Repository, datos: PrestamoCreate, usuario_registra: Any | None = None
 ) -> PrestamoRead:
-    socio = db.get(Socio, datos.socio_id)
-    if socio is None:
+    member = db.get("socios", datos.socio_id)
+    book = db.get("libros", datos.libro_id)
+    if member is None:
         raise NoEncontrado("Socio no encontrado")
-    libro = db.get(Libro, datos.libro_id)
-    if libro is None:
+    if book is None:
         raise NoEncontrado("Libro no encontrado")
-    if not socio.activo:
+    if not member["activo"]:
         raise ReglaNegocio("El socio no está activo")
-    if socio.usuario and socio.usuario.activo is False:
+    user_id = member.get("usuario_id")
+    user = db.get("usuarios", user_id) if user_id else None
+    if user is not None and not user["activo"]:
         raise ReglaNegocio("El socio no tiene usuario activo")
-    multa_pendiente = db.scalar(
-        select(Prestamo.id).where(
-            Prestamo.socio_id == socio.id,
-            Prestamo.multa > 0,
-            Prestamo.multa_pagada.is_(False),
-        )
+
+    loans = list(
+        db.collection("prestamos").find({"socio_id": member["id"]}, {"_id": 0})
     )
-    if multa_pendiente is not None:
+    if any(
+        Decimal(str(loan.get("multa", "0"))) > 0 and not loan.get("multa_pagada", False)
+        for loan in loans
+    ):
         raise ReglaNegocio("El socio tiene multas pendientes")
-    vencidos = db.scalar(
-        select(func.count(Prestamo.id)).where(
-            Prestamo.socio_id == socio.id,
-            expresion_estado(EstadoPrestamo.vencido),
-        )
-    )
-    if vencidos:
+    if any(
+        _estado(loan) == EstadoPrestamo.vencido
+        for loan in loans
+    ):
         raise ReglaNegocio("El socio tiene préstamos vencidos")
-    sin_devolver = db.scalar(
-        select(func.count(Prestamo.id)).where(
-            Prestamo.socio_id == socio.id,
-            Prestamo.fecha_devolucion.is_(None),
-        )
-    )
-    if sin_devolver >= 3:
+    active_for_member = [
+        loan for loan in loans if loan.get("fecha_devolucion") is None
+    ]
+    if len(active_for_member) >= 3:
         raise ReglaNegocio("Máximo de 3 préstamos")
-    repetido = db.scalar(
-        select(Prestamo.id).where(
-            Prestamo.socio_id == socio.id,
-            Prestamo.libro_id == libro.id,
-            Prestamo.fecha_devolucion.is_(None),
-        )
-    )
-    if repetido is not None:
+    if any(
+        loan["libro_id"] == book["id"] and loan.get("fecha_devolucion") is None
+        for loan in loans
+    ):
         raise Conflicto("El socio ya tiene este libro sin devolver")
-    prestados = db.scalar(
-        select(func.count(Prestamo.id)).where(
-            Prestamo.libro_id == libro.id,
-            Prestamo.fecha_devolucion.is_(None),
-        )
+    active_for_book = db.collection("prestamos").count_documents(
+        {"libro_id": book["id"], "fecha_devolucion": None}
     )
-    if libro.ejemplares - (prestados or 0) <= 0:
+    if book["ejemplares"] - active_for_book <= 0:
         raise ReglaNegocio("No hay ejemplares disponibles")
-    prestamo = Prestamo(
-        libro_id=libro.id,
-        socio_id=socio.id,
-        fecha_prestamo=datos.fecha_prestamo,
-        fecha_limite=datos.fecha_prestamo + timedelta(days=datos.dias),
-        registrado_por_id=getattr(usuario_registra, "id", None),
+
+    started = datos.fecha_prestamo
+    loan = db.insert(
+        "prestamos",
+        {
+            "libro_id": book["id"],
+            "socio_id": member["id"],
+            "fecha_prestamo": started,
+            "fecha_limite": started + timedelta(days=datos.dias),
+            "fecha_devolucion": None,
+            "multa": "0.00",
+            "multa_pagada": False,
+            "registrado_por_id": getattr(usuario_registra, "id", None),
+        },
     )
-    db.add(prestamo)
-    db.commit()
-    db.refresh(prestamo)
-    return _respuesta(prestamo)
+    return _respuesta(db, loan)
 
 
-def devolver_prestamo(db: Session, prestamo_id: int) -> PrestamoRead:
-    prestamo = db.scalar(
-        select(Prestamo)
-        .options(selectinload(Prestamo.libro), selectinload(Prestamo.socio))
-        .where(Prestamo.id == prestamo_id)
-    )
-    if prestamo is None:
+def devolver_prestamo(db: Repository, prestamo_id: int) -> PrestamoRead:
+    loan = db.get("prestamos", prestamo_id)
+    if loan is None:
         raise NoEncontrado("Préstamo no encontrado")
-    if prestamo.fecha_devolucion is not None:
+    if loan.get("fecha_devolucion") is not None:
         raise Conflicto("El préstamo ya fue devuelto")
-    hoy = date.today()
-    if hoy < prestamo.fecha_prestamo:
+    today = date.today()
+    if today < _as_date(loan["fecha_prestamo"]):
         raise ReglaNegocio("La fecha de devolución no puede ser anterior al préstamo")
-    retraso = (hoy - prestamo.fecha_limite).days
-    if retraso > 0:
-        prestamo.multa = Decimal(retraso) * Decimal("0.50")
-        prestamo.multa_pagada = False
-    else:
-        prestamo.multa = Decimal("0.00")
-        prestamo.multa_pagada = True
-    prestamo.fecha_devolucion = hoy
-    db.commit()
-    return _respuesta(prestamo)
+    delay = (today - _as_date(loan["fecha_limite"])).days
+    amount = Decimal(max(delay, 0)) * Decimal("0.50")
+    changes = {
+        "fecha_devolucion": today,
+        "multa": str(amount),
+        "multa_pagada": amount == 0,
+    }
+    updated = db.update("prestamos", prestamo_id, changes)
+    existing_fine = db.collection("multas").find_one({"prestamo_id": prestamo_id})
+    if amount > 0:
+        fine = {
+            "prestamo_id": prestamo_id,
+            "socio_id": loan["socio_id"],
+            "monto": str(amount),
+            "pagada": False,
+            "fecha_creada": today,
+            "fecha_pago": None,
+        }
+        if existing_fine:
+            db.collection("multas").update_one(
+                {"id": existing_fine["id"]}, {"$set": fine}
+            )
+        else:
+            db.insert("multas", fine)
+    return _respuesta(db, updated or loan)
+
+
+def pagar_multa(db: Repository, prestamo_id: int) -> PrestamoRead:
+    loan = db.get("prestamos", prestamo_id)
+    if loan is None:
+        raise NoEncontrado("Préstamo no encontrado")
+    if Decimal(str(loan.get("multa", "0"))) <= 0:
+        raise Conflicto("No hay multa pendiente")
+    if loan.get("multa_pagada", False):
+        raise Conflicto("La multa ya está pagada")
+    updated = db.update("prestamos", prestamo_id, {"multa_pagada": True})
+    db.collection("multas").update_many(
+        {"prestamo_id": prestamo_id},
+        {"$set": {"pagada": True, "fecha_pago": date.today().isoformat()}},
+    )
+    return _respuesta(db, updated or loan)

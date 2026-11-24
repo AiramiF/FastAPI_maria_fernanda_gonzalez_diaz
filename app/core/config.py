@@ -6,16 +6,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = Field(..., description="URL de conexión principal de PostgreSQL")
-    MONGODB_URI: str | None = Field(
-        default=None,
-        description="URI de conexión de MongoDB; opcional mientras PostgreSQL siga activo",
-    )
+    MONGODB_URI: str = Field(default="", description="URI de conexión de MongoDB Atlas")
     MONGODB_DATABASE: str = Field(default="biblioteca")
-    TEST_DATABASE_URL: str = Field(
-        default="postgresql+psycopg://postgres:postgres@localhost:5432/FASTAPI_BIBLIOTECA_TEST",
-        description="URL de conexión para pruebas de PostgreSQL",
-    )
     SECRET_KEY: str = Field(..., min_length=32, description="Clave secreta JWT. Mínimo 32 caracteres")
     ALGORITHM: str = Field(default="HS256", description="Algoritmo de firma JWT")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=15, ge=1)

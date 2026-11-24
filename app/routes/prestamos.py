@@ -1,12 +1,10 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, status
 
 from ..controllers import prestamos
 from ..core.dependencies import (
-    AdminUser,
     CurrentUser,
     PaginationDep,
-    SessionDep,
-    SocioUser,
+    RepositoryDep,
     StaffUser,
 )
 from ..schemas.pagina import Pagina
@@ -17,7 +15,7 @@ router = APIRouter(prefix="/prestamos", tags=["Préstamos"])
 
 @router.get("", response_model=Pagina[PrestamoRead])
 def listar(
-    db: SessionDep,
+    db: RepositoryDep,
     paginacion: PaginationDep,
     usuario: CurrentUser,
     estado: EstadoPrestamo | None = None,
@@ -41,7 +39,7 @@ def listar(
 @router.get("/{prestamo_id}", response_model=PrestamoRead)
 def obtener(
     prestamo_id: int,
-    db: SessionDep,
+    db: RepositoryDep,
     usuario: CurrentUser,
 ) -> PrestamoRead:
     return prestamos.obtener_prestamo(db, prestamo_id, usuario)
@@ -54,7 +52,7 @@ def obtener(
 )
 def crear(
     datos: PrestamoCreate,
-    db: SessionDep,
+    db: RepositoryDep,
     usuario: StaffUser,
 ) -> PrestamoRead:
     return prestamos.crear_prestamo(db, datos, usuario)
@@ -63,7 +61,7 @@ def crear(
 @router.post("/{prestamo_id}/devolucion", response_model=PrestamoRead)
 def devolver(
     prestamo_id: int,
-    db: SessionDep,
+    db: RepositoryDep,
     _: StaffUser,
 ) -> PrestamoRead:
     return prestamos.devolver_prestamo(db, prestamo_id)
@@ -72,17 +70,7 @@ def devolver(
 @router.post("/{prestamo_id}/pago-multa", response_model=PrestamoRead)
 def pago_multa(
     prestamo_id: int,
-    db: SessionDep,
+    db: RepositoryDep,
     _: StaffUser,
 ) -> PrestamoRead:
-    prestamo = db.get(prestamos.Prestamo, prestamo_id)
-    if prestamo is None:
-        raise prestamos.NoEncontrado("Préstamo no encontrado")
-    if prestamo.multa <= 0:
-        raise prestamos.Conflicto("No hay multa pendiente")
-    if prestamo.multa_pagada:
-        raise prestamos.Conflicto("La multa ya está pagada")
-    prestamo.multa_pagada = True
-    db.commit()
-    db.refresh(prestamo)
-    return prestamos._respuesta(prestamo)
+    return prestamos.pagar_multa(db, prestamo_id)

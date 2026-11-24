@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from . import models
 from .core.config import get_settings
 from .core.exceptions import (
     CuentaBloqueada,
@@ -17,6 +16,7 @@ from .core.exceptions import (
     NoAutenticado,
     Prohibido,
 )
+from .core.mongodb import connect_repository
 from .core.rate_limit import limiter
 from .routes import (
     auth,
@@ -35,8 +35,18 @@ logger = logging.getLogger("biblioteca.api")
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    yield
+async def lifespan(app: FastAPI):
+    repository = connect_repository(settings)
+    app.state.repository = repository
+    try:
+        if repository.mode == "simulada" and settings.ENVIRONMENT not in {"test", "prod"}:
+            from .scripts.seed_demo import seed_demo_catalog, seed_demo_users
+
+            seed_demo_users(repository)
+            seed_demo_catalog(repository)
+        yield
+    finally:
+        repository.close()
 
 
 app = FastAPI(
@@ -114,5 +124,6 @@ async def error_aplicacion_handler(
 
 
 @app.exception_handler(Exception)
-async def exception_handler(_: Request, __: Exception) -> JSONResponse:
+async def exception_handler(_: Request, exc: Exception) -> JSONResponse:
+    logger.error("Error interno no controlado: %s", type(exc).__name__)
     return JSONResponse(status_code=500, content={"detail": "Error interno del servidor"})

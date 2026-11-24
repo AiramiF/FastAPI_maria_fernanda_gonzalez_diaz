@@ -1,91 +1,94 @@
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 
 from ..core.exceptions import Conflicto, NoEncontrado
-from ..models.prestamo import Prestamo
-from ..models.socio import Socio
+from ..core.mongodb import Repository
 from ..schemas.pagina import Pagina
-from ..schemas.prestamo import EstadoPrestamo, PrestamoRead
-from ..schemas.socio import SocioCreate, SocioPatch, SocioRead
-from .prestamos import _respuesta, expresion_estado
+from ..schemas.prestamo import EstadoPrestamo
+from ..schemas.socio import SocioCreate, SocioPatch
+from . import prestamos
 
 
 def listar_socios(
-    db: Session, skip: int, limit: int, activo: bool | None = None
-) -> Pagina[SocioRead]:
-    statement = select(Socio)
-    if activo is not None:
-        statement = statement.where(Socio.activo.is_(activo))
-    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
-    items = db.scalars(statement.order_by(Socio.id).offset(skip).limit(limit)).all()
-    return Pagina(items=list(items), total=int(total or 0), skip=skip, limit=limit)
+    db: Repository, skip: int, limit: int, activo: bool | None = None
+) -> Pagina:
+    query = {} if activo is None else {"activo": activo}
+    items = list(db.collection("socios").find(query, {"_id": 0}).sort("id", 1))
+    total = db.collection("socios").count_documents(query)
+    return Pagina(items=items[skip : skip + limit], total=total, skip=skip, limit=limit)
 
 
-def obtener_socio(db: Session, socio_id: int) -> Socio:
-    socio = db.get(Socio, socio_id)
-    if socio is None:
+def obtener_socio(db: Repository, socio_id: int) -> dict:
+    member = db.get("socios", socio_id)
+    if member is None:
         raise NoEncontrado("Socio no encontrado")
-    return socio
+    return member
 
 
-def crear_socio(db: Session, datos: SocioCreate) -> Socio:
-    if db.scalar(select(Socio.id).where(Socio.email == datos.email)) is not None:
+def crear_socio(db: Repository, datos: SocioCreate) -> dict:
+    if db.collection("socios").find_one({"email": datos.email}):
         raise Conflicto("El email ya existe")
-    socio = Socio(**datos.model_dump())
-    db.add(socio)
-    db.commit()
-    db.refresh(socio)
-    return socio
+    return db.insert(
+        "socios",
+        {
+            **datos.model_dump(),
+            "activo": True,
+            "fecha_alta": datetime.now(timezone.utc),
+            "usuario_id": None,
+        },
+    )
 
 
-def actualizar_socio(db: Session, socio_id: int, datos: SocioPatch) -> Socio:
-    socio = obtener_socio(db, socio_id)
-    cambios = datos.model_dump(exclude_unset=True)
-    if "email" in cambios and db.scalar(
-        select(Socio.id).where(
-            Socio.email == datos.email, Socio.id != socio_id
-        )
-    ) is not None:
+def actualizar_socio(db: Repository, socio_id: int, datos: SocioPatch) -> dict:
+    obtener_socio(db, socio_id)
+    changes = datos.model_dump(exclude_unset=True)
+    if "email" in changes and db.collection("socios").find_one(
+        {"email": changes["email"], "id": {"$ne": socio_id}}
+    ):
         raise Conflicto("El email ya existe")
-    for campo, valor in cambios.items():
-        setattr(socio, campo, valor)
-    db.commit()
-    db.refresh(socio)
-    return socio
+    return db.update("socios", socio_id, changes) or obtener_socio(db, socio_id)
 
 
-def eliminar_socio(db: Session, socio_id: int) -> None:
-    socio = obtener_socio(db, socio_id)
-    prestamos = db.scalars(
-        select(Prestamo).where(Prestamo.socio_id == socio_id)
-    ).all()
-    if any(prestamo.fecha_devolucion is None for prestamo in prestamos):
+def actualizar_perfil_propio(
+    db: Repository, socio_id: int, cambios: dict
+) -> dict:
+    obtener_socio(db, socio_id)
+    return db.update("socios", socio_id, cambios) or obtener_socio(db, socio_id)
+
+
+def eliminar_socio(db: Repository, socio_id: int) -> None:
+    member = obtener_socio(db, socio_id)
+    loans = list(db.collection("prestamos").find({"socio_id": socio_id}, {"_id": 0}))
+    if any(loan.get("fecha_devolucion") is None for loan in loans):
         raise Conflicto("No se puede eliminar un socio con préstamos sin devolver")
-    if prestamos:
-        socio.activo = False
-    else:
-        db.delete(socio)
-    db.commit()
+    if loans:
+        db.update("socios", socio_id, {"activo": False})
+        return
+    if member.get("usuario_id") is not None:
+        db.update("usuarios", member["usuario_id"], {"socio_id": None})
+    db.delete("socios", socio_id)
 
 
 def listar_prestamos_socio(
-    db: Session,
+    db: Repository,
     socio_id: int,
     skip: int,
     limit: int,
     estado: EstadoPrestamo | None,
-) -> Pagina[PrestamoRead]:
+) -> Pagina:
     obtener_socio(db, socio_id)
-    statement = select(Prestamo).where(Prestamo.socio_id == socio_id)
-    if estado is not None:
-        statement = statement.where(expresion_estado(estado))
-    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
-    prestamos = db.scalars(
-        statement.order_by(Prestamo.id).offset(skip).limit(limit)
-    ).all()
-    return Pagina(
-        items=[_respuesta(prestamo) for prestamo in prestamos],
-        total=int(total or 0),
-        skip=skip,
-        limit=limit,
+    return prestamos.listar_prestamos(
+        db, skip, limit, estado, socio_id=socio_id, libro_id=None
     )
+
+
+def listar_multas_socio(db: Repository, socio_id: int, skip: int, limit: int) -> Pagina:
+    loans = [
+        loan
+        for loan in db.collection("prestamos").find(
+            {"socio_id": socio_id, "multa_pagada": False}, {"_id": 0}
+        )
+        if float(loan.get("multa", "0")) > 0
+    ]
+    loans.sort(key=lambda loan: loan["id"])
+    items = [prestamos._respuesta(db, loan) for loan in loans[skip : skip + limit]]
+    return Pagina(items=items, total=len(loans), skip=skip, limit=limit)
